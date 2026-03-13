@@ -337,15 +337,20 @@ class ZITModel:
         catboost.CatBoostRegressor or catboost.CatBoostClassifier
         """
         self._check_fitted()
+        if component not in ("mean", "dispersion", "zero"):
+            raise ValueError(
+                f"component must be one of ['mean', 'dispersion', 'zero']; got {component!r}"
+            )
+        if component == "zero" and self.link_scenario == "linked":
+            raise ValueError(
+                "No separate zero-inflation model in linked scenario. "
+                "q is derived from the mean model via q = 1/(1+mu^gamma)."
+            )
         mapping = {
             "mean": self._mu_model,
             "dispersion": self._phi_model,
             "zero": self._pi_model,
         }
-        if component not in mapping:
-            raise ValueError(
-                f"component must be one of {list(mapping.keys())}; got {component!r}"
-            )
         return mapping[component]
 
     # ------------------------------------------------------------------
@@ -376,7 +381,7 @@ class ZITModel:
         for em_iter in range(self.em_iterations):
             # E-step
             pi_em = e_step(y, mu, phi, q, p, w)
-            em_weights = 1.0 - pi_em  # weight for Tweedie component
+            em_weights = np.maximum(1.0 - pi_em, 1e-6)  # weight for Tweedie component
 
             # Compute observed log-likelihood
             ll_vals = zit_log_likelihood(y, mu, phi, q, p, w)
@@ -405,6 +410,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 self._mu_model.fit(mu_train_pool)
             else:
@@ -418,6 +424,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 new_mu_model.fit(mu_train_pool, init_model=self._mu_model)
                 self._mu_model = new_mu_model
@@ -451,6 +458,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 self._pi_model.fit(pi_train_pool)
             else:
@@ -463,6 +471,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 new_pi_model.fit(pi_train_pool, init_model=self._pi_model)
                 self._pi_model = new_pi_model
@@ -493,6 +502,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 self._phi_model.fit(phi_train_pool)
             else:
@@ -505,6 +515,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 new_phi_model.fit(phi_train_pool, init_model=self._phi_model)
                 self._phi_model = new_phi_model
@@ -549,7 +560,7 @@ class ZITModel:
 
         for em_iter in range(self.em_iterations):
             pi_em = e_step(y, mu, phi, q, p, w)
-            em_weights = 1.0 - pi_em
+            em_weights = np.maximum(1.0 - pi_em, 1e-6)
 
             ll_vals = zit_log_likelihood(y, mu, phi, q, p, w)
             ll_total = float(np.sum(ll_vals))
@@ -576,6 +587,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 self._mu_model.fit(mu_train_pool)
             else:
@@ -588,6 +600,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 new_mu_model.fit(mu_train_pool, init_model=self._mu_model)
                 self._mu_model = new_mu_model
@@ -621,6 +634,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 self._phi_model.fit(phi_train_pool)
             else:
@@ -633,6 +647,7 @@ class ZITModel:
                     random_seed=self.random_seed,
                     eval_metric='RMSE',
                     allow_writing_files=False,
+                    allow_const_label=True,
                 )
                 new_phi_model.fit(phi_train_pool, init_model=self._phi_model)
                 self._phi_model = new_phi_model
@@ -669,7 +684,7 @@ class ZITModel:
             q = 1.0 / (1.0 + mu ** gamma)
 
             pi_em = e_step(y, mu, phi, q, p, w)
-            em_weights = 1.0 - pi_em
+            em_weights = np.maximum(1.0 - pi_em, 1e-6)
 
             ll_vals = zit_log_likelihood(y, mu, phi, q, p, w)
             ll = float(np.sum(ll_vals))

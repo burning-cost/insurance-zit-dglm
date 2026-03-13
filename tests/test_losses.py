@@ -229,7 +229,7 @@ class TestZITZeroInflationLoss:
             return -(Pi * np.log(q + 1e-15) + (1 - Pi) * np.log(1 - q + 1e-15))
 
         fd_g = fd_gradient(neg_ce, F)
-        g, _ = loss.calc_ders_range([F], [0.0], None)
+        g, _ = loss.calc_ders_range([F], [0.0], None)[0]
         # g = der1 = d(NegCE)/dF = q - Pi
         assert abs(g - fd_g) < 5e-4
 
