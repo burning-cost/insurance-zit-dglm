@@ -47,9 +47,59 @@ pip install insurance-zit-dglm
 
 ## Quick start
 
+This library requires **Polars DataFrames** as inputs — not NumPy arrays or pandas DataFrames.
+
 ```python
+import numpy as np
 import polars as pl
 from insurance_zit_dglm import ZITModel, ZITReport, check_balance
+
+rng = np.random.default_rng(42)
+n = 2000
+
+# Synthetic UK motor accidental damage portfolio
+vehicle_age = rng.integers(0, 15, n)
+driver_age = rng.integers(18, 75, n)
+ncd_years = rng.integers(0, 5, n)    # 0 = no NCD, 4 = max NCD
+region = rng.choice(["London", "SE", "NW", "Midlands", "Scotland"], n)
+exposure_years = rng.uniform(0.3, 1.0, n)
+
+# Structural zero probability: higher NCD -> more strategic non-claiming
+q_true = 0.15 + 0.08 * ncd_years  # ranges ~0.15 to ~0.47
+
+# Tweedie mu: driven by age and vehicle age
+log_mu = (
+    -1.5
+    + 0.02 * np.maximum(30 - driver_age, 0)   # young driver loading
+    + 0.03 * vehicle_age                        # older vehicle -> higher severity
+    + rng.normal(0, 0.2, n)
+)
+mu_true = np.exp(log_mu) * exposure_years
+
+# Simulate zero-inflated Tweedie outcomes
+structural_zero = rng.binomial(1, q_true)
+compound_poisson = rng.gamma(shape=1.5, scale=mu_true / 1.5)
+y_vals = np.where(structural_zero == 1, 0.0, compound_poisson)
+
+df = pl.DataFrame({
+    "vehicle_age": vehicle_age,
+    "driver_age": driver_age,
+    "ncd_years": ncd_years,
+    "region": region,
+    "exposure_years": exposure_years,
+    "loss": y_vals,
+})
+
+# 70/30 train/test split
+n_train = int(0.7 * n)
+df_train = df[:n_train]
+df_test = df[n_train:]
+
+X_train = df_train.drop("loss")
+y_train = df_train["loss"]
+X_test = df_test.drop("loss")
+y_test = df_test["loss"]
+age_band_series = (df_test["driver_age"] // 10 * 10).alias("age_band")
 
 # Fit
 model = ZITModel(
@@ -127,7 +177,8 @@ The Tweedie power `p` is not gradient-boosted — it is estimated separately by 
 ```python
 from insurance_zit_dglm import estimate_power
 
-# Quick grid search with initial mu estimates
+# Quick grid search with initial mu estimates from a simple model
+mu_initial = y_train.mean() * np.ones(len(y_train))
 p_hat = estimate_power(y_train.to_numpy(), mu_initial, p_grid=[1.2, 1.3, 1.4, 1.5, 1.6, 1.7])
 model = ZITModel(tweedie_power=p_hat)
 ```
