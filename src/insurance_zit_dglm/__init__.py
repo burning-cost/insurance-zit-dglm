@@ -8,7 +8,7 @@ Mathematical foundation:
 
 from insurance_zit_dglm.model import ZITModel, ZITReport
 from insurance_zit_dglm.power import estimate_power
-from insurance_zit_dglm.calibration import check_balance, BalanceResult
+from insurance_zit_dglm.calibration import check_balance, BalanceResult, recalibrate
 
 __all__ = [
     "ZITModel",
@@ -16,6 +16,7 @@ __all__ = [
     "estimate_power",
     "check_balance",
     "BalanceResult",
+    "recalibrate",
 ]
 
 __version__ = "0.1.0"
