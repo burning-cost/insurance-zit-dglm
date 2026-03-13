@@ -1054,7 +1054,7 @@ class ZITReport:
         cum_pop = np.arange(1, n + 1) / n
 
         # Gini from area between curve and diagonal
-        gini = 1.0 - 2.0 * float(np.trapz(cum_obs, cum_pop))
+        gini = 1.0 - 2.0 * float((np.trapezoid if hasattr(np, "trapezoid") else np.trapz)(cum_obs, cum_pop))
 
         if ax is None:
             fig, ax = plt.subplots(figsize=(7, 7))
