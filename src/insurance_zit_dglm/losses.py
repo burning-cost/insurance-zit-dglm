@@ -2,7 +2,12 @@
 CatBoost custom objectives for the three ZIT-DGLM heads.
 
 Each objective implements calc_ders_range(approxes, targets, weights) returning
-a list of (neg_gradient, neg_hessian) tuples — the sign convention required by CatBoost.
+a list of (der1, der2) tuples — where der1 is the gradient of the LOSS function
+(what CatBoost minimises) and der2 is the second derivative (always positive).
+
+Since CatBoost minimises loss = -LL:
+    der1 = d(Loss)/dF = -dLL/dF
+    der2 = d2(Loss)/dF2 = -d2LL/dF2  (positive, since LL is concave)
 
 Sources:
     So & Valdez arXiv:2406.16206 / NAAJ 2025 — gradient/Hessian derivations for ZIT trees
@@ -62,7 +67,11 @@ class ZITTweedieLoss:
         targets: list[float],
         weights: list[float] | None,
     ) -> list[tuple[float, float]]:
-        """Return per-observation (neg_gradient, neg_hessian) for CatBoost."""
+        """Return per-observation (der1, der2) for CatBoost.
+
+        der1 = d(NegLL)/dF = gradient of loss function
+        der2 = d2(NegLL)/dF2 = second derivative of loss (positive)
+        """
         approxes_arr = np.array(approxes)
         targets_arr = np.array(targets)
 
@@ -103,30 +112,40 @@ def _zit_tweedie_ders(
     exposure: float,
 ) -> tuple[float, float]:
     """
-    Compute (neg_gradient, neg_hessian) for one observation under the ZIT Tweedie loss.
+    Compute (der1, der2) for one observation under the ZIT Tweedie loss.
+
+    der1 = d(NegLL)/dF, der2 = d2(NegLL)/dF2.
 
     Formulae from So & Valdez arXiv:2406.16206, adapted for exposure weights.
 
     For y = 0:
         alpha = (1 - q) * exp(-w * mu^(2-p) / (phi * (2-p)))
         beta  = w * mu^(2-p) / phi
-        g = alpha * beta / (q + alpha)
-        h = alpha * beta * [(2-p-beta)*(q+alpha) + alpha*beta] / (q+alpha)^2
+        der1 = alpha * beta / (q + alpha)
+        der2 = alpha * beta * [(2-p-beta)*(q+alpha) + alpha*beta] / (q+alpha)^2
 
     For y > 0:
         beta = w * mu^(2-p) / phi
-        g = -(w/phi) * y * mu^(1-p) + beta
-        h = -(w/phi) * y * (1-p) * mu^(1-p) + (2-p) * beta
+        der1 = -(w/phi) * y * mu^(1-p) + beta    [note: this equals -dLL/dF]
 
-    All gradients are wrt F_mu (log scale); CatBoost multiplies by the Jacobian
-    (mu) internally when using raw approxes.
+        Wait, for y > 0:
+        LL = (w/phi) * [y * mu^(1-p)/(1-p) - mu^(2-p)/(2-p)]
+        dLL/dF = (w/phi) * [y*(1-p)*mu^(1-p)/(1-p) - (2-p)*mu^(2-p)/(2-p)]
+               = (w/phi) * [y*mu^(1-p) - mu^(2-p)]  (Jacobian: dmu/dF = mu)
+               Wait: dLL/dmu = (w/phi)*[y*mu^(-p) - mu^(1-p)]
+               dLL/dF = (w/phi)*mu*[y*mu^(-p) - mu^(1-p)]
+                      = (w/phi)*[y*mu^(1-p) - mu^(2-p)]
+               NegLL der1 = -dLL/dF = (w/phi)*[mu^(2-p) - y*mu^(1-p)]
+                          = beta - (w/phi)*y*mu^(1-p)
 
-    Returns the NEGATIVE gradient and NEGATIVE Hessian (CatBoost convention).
+    All gradients are wrt F_mu (log scale).
+    Returns (der1, der2) where der1 = d(NegLL)/dF, der2 = d2(NegLL)/dF2 > 0.
     """
     eps = 1e-10
     mu = max(mu, eps)
     phi = max(phi, eps)
     p2 = 2.0 - p  # (2-p) shorthand
+    p1 = 1.0 - p  # (1-p) shorthand
 
     beta = exposure * (mu ** p2) / phi
 
@@ -137,22 +156,54 @@ def _zit_tweedie_ders(
         denom = q + alpha
         denom = max(denom, eps)
 
-        g = alpha * beta / denom
-        h = alpha * beta * ((p2 - beta) * denom + alpha * beta) / (denom ** 2)
+        # der1 = d(NegLL)/dF for y=0
+        # NegLL = -log(q + alpha), dNegLL/dF = -d(log(q+alpha))/dF
+        # d(alpha)/dF = alpha * (-beta) (since d(exp(-beta))/dF = exp(-beta)*(-dbeta/dF))
+        #             and dbeta/dF = p2*beta (since beta = w*mu^p2/phi and dmu/dF = mu)
+        # d(log(q+alpha))/dF = (d(alpha)/dF) / (q+alpha) = alpha * (-p2*beta) / denom
+        # But der1 = alpha*beta/denom is derived from the derivative chain:
+        # dLL/dF = alpha*(-dbeta/dF*p2^{-1}*...) ... let me use the clean formula:
+        # NegLL = -log(q + (1-q)*exp(-w*mu^p2/(phi*p2)))
+        # Let t = w*mu^p2/(phi*p2), so alpha = (1-q)*exp(-t)
+        # dNegLL/dF = (1-q)*exp(-t) * (dt/dF) / (q + (1-q)*exp(-t))
+        # dt/dF = d(w*mu^p2/(phi*p2))/dF = w*p2*mu^p2/(phi*p2) = w*mu^p2/phi = beta
+        # So dNegLL/dF = alpha * beta / denom
+        der1 = alpha * beta / denom
+
+        # der2 = d2(NegLL)/dF2
+        # d(alpha*beta/denom)/dF:
+        # Let num = alpha*beta, denom = q+alpha
+        # d(num)/dF = alpha*(dbeta/dF) + beta*(d(alpha)/dF)
+        #           = alpha*p2*beta + beta*(-alpha*beta)  [chain rule, but need to be careful]
+        # Actually d(alpha)/dF = alpha * d(-t)/dF = -alpha*beta
+        # d(beta)/dF = p2*beta
+        # d(alpha*beta)/dF = beta*d(alpha)/dF + alpha*d(beta)/dF
+        #                  = -alpha*beta^2 + alpha*p2*beta = alpha*beta*(p2-beta)
+        # d(denom)/dF = d(alpha)/dF = -alpha*beta
+        # d(alpha*beta/denom)/dF = [d(num)/dF*denom - num*d(denom)/dF] / denom^2
+        #   = [alpha*beta*(p2-beta)*denom - alpha*beta*(-alpha*beta)] / denom^2
+        #   = alpha*beta * [(p2-beta)*denom + alpha*beta] / denom^2
+        der2 = alpha * beta * ((p2 - beta) * denom + alpha * beta) / (denom ** 2)
     else:
         # Positive observation: purely from Tweedie component
-        g = -(exposure / phi) * y * (mu ** (1.0 - p)) + beta
-        h = -(exposure / phi) * y * (1.0 - p) * (mu ** (1.0 - p)) + p2 * beta
+        # LL = (w/phi)*[y*mu^(1-p)/(1-p) - mu^(2-p)/(2-p)] + log(1-q)
+        # dLL/dF = (w/phi)*[y*mu^(1-p) - mu^(2-p)] * (from dmu/dF=mu)
+        #        = (w/phi) * y * mu^(1-p) - beta
+        # der1 = -dLL/dF = -(w/phi)*y*mu^(1-p) + beta = beta - (w/phi)*y*mu^(1-p)
+        der1 = beta - (exposure / phi) * y * (mu ** p1)
+
+        # d2LL/dF2 = (w/phi)*[y*(1-p)*mu^(1-p) - p2*mu^(2-p)]
+        # der2 = -d2LL/dF2 = -(w/phi)*y*(1-p)*mu^(1-p) + p2*beta
+        der2 = p2 * beta - (exposure / phi) * y * p1 * (mu ** p1)
 
     # Apply EM weight: down-weight observations likely to be structural zeros
-    g *= em_weight
-    h *= em_weight
+    der1 *= em_weight
+    der2 *= em_weight
 
-    # CatBoost expects negative gradient and negative Hessian
-    # Hessian must be positive for stable training
-    h = max(h, eps)
+    # Second derivative must be positive for stable training
+    der2 = max(der2, eps)
 
-    return (-g, -h)
+    return (der1, der2)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +219,9 @@ class ZITZeroInflationLoss:
     For y_i > 0: Pi_i = 0 (observation is certainly not a structural zero).
     For y_i = 0: Pi_i in [0,1] from the E-step.
 
-    The gradient is q_i - Pi_i (binary cross-entropy with soft label Pi_i).
+    Loss = -[Pi*log(q) + (1-Pi)*log(1-q)]  (minimised)
+    der1 = d(Loss)/dF = q - Pi
+    der2 = d2(Loss)/dF2 = q*(1-q)
     """
 
     def __init__(self, pi_em_weights: np.ndarray) -> None:
@@ -186,7 +239,11 @@ class ZITZeroInflationLoss:
         targets: list[float],
         weights: list[float] | None,
     ) -> list[tuple[float, float]]:
-        """Return per-observation (neg_gradient, neg_hessian)."""
+        """Return per-observation (der1, der2).
+
+        der1 = d(Loss)/dF = q - Pi (gradient of NegCrossEntropy)
+        der2 = q*(1-q) (positive, second derivative of NegCE)
+        """
         approxes_arr = np.array(approxes)
         pi_em = self.pi_em
         eps = 1e-10
@@ -195,15 +252,13 @@ class ZITZeroInflationLoss:
         q = 1.0 / (1.0 + np.exp(-approxes_arr))
         q = np.clip(q, eps, 1.0 - eps)
 
-        # gradient of binary cross-entropy with soft label: d/dF = q - Pi
-        grad = q - pi_em  # shape (n,)
+        # der1 = d(NegCE)/dF = q - Pi
+        der1 = q - pi_em
 
-        # Hessian: q * (1 - q)
-        hess = q * (1.0 - q)
-        hess = np.maximum(hess, eps)
+        # der2 = q * (1 - q)
+        der2 = np.maximum(q * (1.0 - q), eps)
 
-        # CatBoost convention: return negative grad, negative hess
-        return [(-grad[i], -hess[i]) for i in range(len(grad))]
+        return [(der1[i], der2[i]) for i in range(len(der1))]
 
     def is_max_optimal(self) -> bool:
         return False
@@ -223,14 +278,12 @@ class ZITDispersionLoss:
     scaled unit deviance d_i = D(y_i; mu_hat_i) / w_i follows a Gamma(1/2, phi_i)
     distribution.
 
-    Loss per observation:
-        l_i = (1 - Pi_i) * [- d_i / (2 * phi_i) - (1/2) * log(phi_i)]
+    Loss (NegLL) per observation:
+        L_i = (1 - Pi_i) * [d_i / (2 * phi_i) + (1/2) * log(phi_i)]
 
     With phi_i = exp(F_phi_i), log link:
-        d/dF_phi l_i = (1 - Pi_i) * [d_i / (2 * phi_i) - 1/2]
-        d2/dF_phi2 l_i = (1 - Pi_i) * [- d_i / (2 * phi_i) + 1/2]
-
-    CatBoost sees this as a regression of pseudo-responses with EM weights.
+        der1 = dL/dF = (1 - Pi_i) * [1/2 - d_i / (2 * phi_i)]
+        der2 = d2L/dF2 = (1 - Pi_i) * d_i / (2 * phi_i)  (positive when d>0)
     """
 
     def __init__(
@@ -255,7 +308,11 @@ class ZITDispersionLoss:
         targets: list[float],
         weights: list[float] | None,
     ) -> list[tuple[float, float]]:
-        """Return per-observation (neg_gradient, neg_hessian)."""
+        """Return per-observation (der1, der2).
+
+        der1 = d(Loss)/dF = em_w * (0.5 - d/(2*phi))
+        der2 = d2(Loss)/dF2 = em_w * d/(2*phi) >= 0
+        """
         approxes_arr = np.array(approxes)
         eps = 1e-10
 
@@ -265,21 +322,16 @@ class ZITDispersionLoss:
         d = self.d
         em_w = self.em_w
 
-        # Gradient of log-likelihood wrt F_phi (log link)
-        grad = em_w * (d / (2.0 * phi) - 0.5)
+        # NegLL = em_w * [d/(2*phi) + 0.5*log(phi)]
+        # dNegLL/dF = em_w * [-d/(2*phi) + 0.5]  ... wait:
+        # Let F = log(phi), phi = exp(F)
+        # NegLL = em_w * [d/(2*exp(F)) + 0.5*F]
+        # dNegLL/dF = em_w * [-d*exp(-F)/2 + 0.5] = em_w * [-d/(2*phi) + 0.5] = em_w * (0.5 - d/(2*phi))
+        # d2NegLL/dF2 = em_w * d*exp(-F)/2 = em_w * d/(2*phi)  (positive)
+        der1 = em_w * (0.5 - d / (2.0 * phi))
+        der2 = np.maximum(em_w * d / (2.0 * phi), eps)
 
-        # Hessian (second derivative wrt F_phi)
-        # d2/dF2 [em_w * (-d/(2*phi) - 0.5*log(phi))]
-        # phi = exp(F), d(phi)/dF = phi
-        # d2l/dF2 = em_w * (-d/(2*phi) + 0) ... wait, full chain:
-        # l = em_w * [-d/(2*phi) - 0.5*F]
-        # dl/dF = em_w * [d/(2*phi) - 0.5]  (since d(1/phi)/dF = -1/phi)
-        # d2l/dF2 = em_w * [-d/(2*phi)]
-        hess = em_w * (-d / (2.0 * phi))
-        # Hessian must be positive for stable boosting (we negate for CatBoost)
-        hess_neg = np.maximum(-hess, eps)
-
-        return [(-grad[i], hess_neg[i]) for i in range(len(grad))]
+        return [(der1[i], der2[i]) for i in range(len(der1))]
 
     def is_max_optimal(self) -> bool:
         return False
@@ -325,19 +377,18 @@ def tweedie_unit_deviance(
     p1 = 1.0 - p  # (1-p)
     p2 = 2.0 - p  # (2-p)
 
-    y_pos = np.where(y > 0, y, 0.0)
-
-    # First term: y * (y^(1-p) - mu^(1-p)) / (1-p) — zero when y=0
+    # For y > 0: first term y * (y^(1-p) - mu^(1-p)) / (1-p)
+    # For y = 0: first term is 0
     t1 = np.where(
         y > 0,
-        y_pos * ((y_pos ** p1) - (mu ** p1)) / p1,
+        y * ((y ** p1) - (mu ** p1)) / p1,
         0.0,
     )
 
     # Second term: (y^(2-p) - mu^(2-p)) / (2-p)
     t2 = np.where(
         y > 0,
-        ((y_pos ** p2) - (mu ** p2)) / p2,
+        ((y ** p2) - (mu ** p2)) / p2,
         -(mu ** p2) / p2,
     )
 
@@ -345,8 +396,8 @@ def tweedie_unit_deviance(
     deviance = np.maximum(deviance, 0.0)
 
     if exposure is not None:
-        exposure = np.maximum(exposure, eps)
-        deviance = deviance / exposure
+        exposure_safe = np.maximum(exposure, eps)
+        deviance = deviance / exposure_safe
 
     return deviance
 
@@ -405,6 +456,7 @@ def zit_log_likelihood(
         w = exposure[i]
         if y[i] <= 0.0:
             tweedie_zero_log = -w * (mu[i] ** p2) / (phi[i] * p2)
+            tweedie_zero_log = max(tweedie_zero_log, -700.0)
             ll[i] = np.log(q[i] + (1.0 - q[i]) * np.exp(tweedie_zero_log))
         else:
             tweedie_pos = (w / phi[i]) * (

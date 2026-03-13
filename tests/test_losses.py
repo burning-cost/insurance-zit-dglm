@@ -8,6 +8,10 @@ Covers:
     - tweedie_unit_deviance correctness and edge cases
     - zit_log_likelihood correctness and boundary conditions
     - Numerical consistency between gradient and finite differences
+
+CatBoost convention: calc_ders_range returns (der1, der2) where
+    der1 = d(Loss)/dF = -d(LL)/dF  (gradient of the loss being minimised)
+    der2 = d2(Loss)/dF2 > 0         (positive curvature, loss is convex)
 """
 
 import numpy as np
@@ -58,28 +62,25 @@ class TestZITTweedieLoss:
             assert isinstance(h, (int, float, np.floating))
 
     def test_hessian_positive(self):
-        """Hessian (negative of returned value) should be positive for stability."""
+        """der2 must be positive (loss is convex)."""
         loss = self._make_loss(10)
         rng = np.random.default_rng(1)
         approxes = list(rng.uniform(-1, 1, 10))
         targets = list(np.where(rng.random(10) < 0.3, 0.0, rng.exponential(1.0, 10)))
         result = loss.calc_ders_range(approxes, targets, None)
         for _, h in result:
-            # CatBoost returns -H, so h should be >= 0 (positive curvature)
-            assert -h >= 0 or abs(h) < 1e-8  # h is negative of hessian, so >=0
+            assert h >= 0
 
     def test_zero_observations_different_from_positive(self):
         """y=0 and y>0 observations should produce different gradient patterns."""
-        n = 2
-        phi = np.array([1.0, 1.0])
-        q = np.array([0.2, 0.2])
-        em_w = np.array([1.0, 1.0])
-        exposure = np.ones(2)
+        phi = np.array([1.0])
+        q = np.array([0.2])
+        em_w = np.array([1.0])
+        exposure = np.ones(1)
         loss = ZITTweedieLoss(1.5, phi, q, em_w, exposure)
 
         result_zero = loss.calc_ders_range([0.0], [0.0], None)
         result_pos = loss.calc_ders_range([0.0], [1.0], None)
-        # Gradients should differ between y=0 and y>0
         assert result_zero[0][0] != result_pos[0][0]
 
     def test_em_weight_scales_gradient(self):
@@ -105,57 +106,66 @@ class TestZITTweedieLoss:
         assert not loss.is_max_optimal()
 
     def test_gradient_finite_difference_y0(self):
-        """Check gradient agrees with numerical finite difference for y=0."""
+        """
+        Check gradient agrees with numerical finite difference for y=0.
+
+        der1 = d(NegLL)/dF, so we compare der1 to FD of NegLL.
+        """
         p = 1.5
         phi = np.array([1.2])
         q = np.array([0.2])
         em_w = np.array([1.0])
         exposure = np.ones(1)
 
-        from insurance_zit_dglm.losses import _zit_tweedie_ders
-
-        F = 0.3  # log-scale score
+        F = 0.3
 
         def neg_ll(F_val):
+            """Negative log-likelihood for y=0."""
             mu = np.exp(F_val)
-            # ZIT log-likelihood for y=0
             p2 = 2.0 - p
             log_tz = -(mu ** p2) / (phi[0] * p2)
             log_tz = max(log_tz, -700)
-            return np.log(q[0] + (1 - q[0]) * np.exp(log_tz))
+            # Return NegLL = -LL
+            return -np.log(q[0] + (1 - q[0]) * np.exp(log_tz))
 
-        # FD gradient of log-lik w.r.t. F
+        # FD gradient of NegLL w.r.t. F
         fd_g = fd_gradient(neg_ll, F)
 
         g, h = _zit_tweedie_ders(
             mu=np.exp(F), y=0.0, p=p,
             phi=phi[0], q=q[0], em_weight=1.0, exposure=1.0
         )
-        # Our g is negative gradient of neg_ll (i.e., positive gradient of ll)
-        # fd_g is gradient of ll w.r.t. F
-        assert abs((-g) - fd_g) < 5e-4
+        # g = der1 = d(NegLL)/dF should match fd_g
+        assert abs(g - fd_g) < 5e-4
 
     def test_gradient_finite_difference_y_positive(self):
-        """Check gradient agrees with numerical finite difference for y>0."""
+        """
+        Check gradient agrees with numerical finite difference for y>0.
+
+        der1 = d(NegLL)/dF = -d(LL)/dF, so compare to FD of NegLL.
+        """
         p = 1.5
         phi_val = 1.2
-        q_val = 0.0  # no structural zeros for positive y
+        q_val = 0.0
         F = 0.3
+        y_val = 2.0
 
-        def ll_pos(F_val):
+        def neg_ll_pos(F_val):
+            """Negative log-likelihood for y>0 (Tweedie part, q=0)."""
             mu = np.exp(F_val)
             p1 = 1.0 - p
             p2 = 2.0 - p
-            y_val = 2.0
-            return (1.0 / phi_val) * (y_val * (mu ** p1) / p1 - (mu ** p2) / p2)
+            ll = (1.0 / phi_val) * (y_val * (mu ** p1) / p1 - (mu ** p2) / p2)
+            return -ll  # NegLL
 
-        fd_g = fd_gradient(ll_pos, F)
+        fd_g = fd_gradient(neg_ll_pos, F)
 
         g, h = _zit_tweedie_ders(
-            mu=np.exp(F), y=2.0, p=p,
+            mu=np.exp(F), y=y_val, p=p,
             phi=phi_val, q=q_val, em_weight=1.0, exposure=1.0
         )
-        assert abs((-g) - fd_g) < 5e-4
+        # g = der1 = d(NegLL)/dF should match fd_g
+        assert abs(g - fd_g) < 5e-4
 
     def test_power_values(self):
         """Loss should work for different power values in (1, 2)."""
@@ -169,6 +179,7 @@ class TestZITTweedieLoss:
             g, h = result[0]
             assert np.isfinite(g)
             assert np.isfinite(h)
+            assert h >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -183,19 +194,19 @@ class TestZITZeroInflationLoss:
         result = loss.calc_ders_range([0.1, -0.5, 0.2, -1.0, 0.0], [0, 0, 0, 0, 0], None)
         assert len(result) == 5
 
-    def test_gradient_at_pi_equals_label(self):
+    def test_gradient_at_pi_equals_q(self):
         """When q = Pi_i, gradient should be ~0."""
-        # Pi_i = 0.5, q = 0.5 => gradient = q - Pi = 0
+        # Pi_i = 0.5, q = 0.5 => der1 = q - Pi = 0
         pi_em = np.array([0.5])
         loss = ZITZeroInflationLoss(pi_em)
         # logit(0.5) = 0
         result = loss.calc_ders_range([0.0], [0.0], None)
         g, h = result[0]
-        # -g = q - Pi = 0.5 - 0.5 = 0
+        # der1 = q - Pi = 0.5 - 0.5 = 0
         assert abs(g) < 1e-6
 
     def test_hessian_sigmoid_form(self):
-        """Hessian should equal q*(1-q)."""
+        """der2 should equal q*(1-q)."""
         pi_em = np.array([0.3])
         loss = ZITZeroInflationLoss(pi_em)
         F = 0.5
@@ -203,32 +214,42 @@ class TestZITZeroInflationLoss:
         result = loss.calc_ders_range([F], [0.0], None)
         _, h = result[0]
         expected_hess = q * (1.0 - q)
-        assert abs(-h - expected_hess) < 1e-6
+        assert abs(h - expected_hess) < 1e-6
 
     def test_gradient_agrees_fd(self):
-        """Gradient agrees with finite difference of binary cross-entropy."""
+        """Gradient agrees with finite difference of NegCrossEntropy."""
         Pi = 0.4
         pi_em = np.array([Pi])
         loss = ZITZeroInflationLoss(pi_em)
         F = 0.3
 
-        def bce(F_val):
+        def neg_ce(F_val):
+            """Negative binary cross-entropy with soft label Pi."""
             q = 1.0 / (1.0 + np.exp(-F_val))
-            return Pi * np.log(q + 1e-15) + (1 - Pi) * np.log(1 - q + 1e-15)
+            return -(Pi * np.log(q + 1e-15) + (1 - Pi) * np.log(1 - q + 1e-15))
 
-        fd_g = fd_gradient(bce, F)
+        fd_g = fd_gradient(neg_ce, F)
         g, _ = loss.calc_ders_range([F], [0.0], None)
-        assert abs((-g) - fd_g) < 5e-4
+        # g = der1 = d(NegCE)/dF = q - Pi
+        assert abs(g - fd_g) < 5e-4
 
-    def test_positive_obs_zero_pi(self):
-        """For y>0, Pi=0 means gradient = q (model should push q down)."""
-        pi_em = np.array([0.0])  # Pi=0 for positive obs
+    def test_positive_obs_zero_pi_pushes_q_down(self):
+        """For y>0, Pi=0, so der1 = q - 0 = q > 0 (pushes raw score down)."""
+        pi_em = np.array([0.0])
         loss = ZITZeroInflationLoss(pi_em)
         F = 0.0  # q = 0.5
         result = loss.calc_ders_range([F], [1.0], None)
         g, _ = result[0]
-        # gradient = q - Pi = 0.5 - 0 = 0.5; returned as -g = -0.5
-        assert abs(g - (-0.5)) < 1e-6
+        # der1 = q - Pi = 0.5 - 0 = 0.5 (positive => gradient descent decreases F)
+        assert abs(g - 0.5) < 1e-6
+
+    def test_hessian_positive(self):
+        """der2 must be positive."""
+        pi_em = np.array([0.0, 0.3, 0.7, 1.0])
+        loss = ZITZeroInflationLoss(pi_em)
+        result = loss.calc_ders_range([0.0, 0.5, -0.5, 1.0], [0]*4, None)
+        for _, h in result:
+            assert h >= 0
 
     def test_is_max_optimal_false(self):
         loss = ZITZeroInflationLoss(np.zeros(1))
@@ -251,7 +272,7 @@ class TestZITDispersionLoss:
         assert len(result) == n
 
     def test_em_weight_zero_gives_zero_gradient(self):
-        """EM weight = 0 (observation is certainly structural zero) => zero gradient."""
+        """EM weight = 0 => zero gradient (certain structural zero)."""
         d = np.array([2.0])
         em_w = np.array([0.0])
         loss = ZITDispersionLoss(d, em_w)
@@ -259,23 +280,49 @@ class TestZITDispersionLoss:
         g, _ = result[0]
         assert abs(g) < 1e-9
 
-    def test_gradient_stationary_at_expected_deviance(self):
-        """Gradient = 0 when phi = d/2 (expected deviance from chi^2(1))."""
-        # At stationarity: d/(2*phi) = 0.5 => phi = d
-        # Actually l = em_w * [-d/(2*phi) - 0.5*log(phi)]
-        # dl/dphi = em_w * [d/(2*phi^2) - 1/(2*phi)] = em_w/(2*phi) * [d/phi - 1]
-        # dl/dF = phi * dl/dphi = em_w/2 * [d/phi - 1]
-        # = 0 when d = phi
+    def test_stationary_at_d_over_phi(self):
+        """
+        der1 = em_w*(0.5 - d/(2*phi)) = 0 when phi = d.
+        """
         d_val = 2.0
-        phi_val = d_val  # stationary point
+        phi_val = d_val  # stationary point: d = phi
         F_val = np.log(phi_val)
         em_w = np.array([1.0])
         d = np.array([d_val])
         loss = ZITDispersionLoss(d, em_w)
         result = loss.calc_ders_range([F_val], [d_val], None)
         g, _ = result[0]
-        # gradient of ll at stationary point should be 0
         assert abs(g) < 1e-6
+
+    def test_gradient_agrees_fd(self):
+        """Gradient agrees with FD of the gamma pseudo-NegLL."""
+        d_val = 2.0
+        em_w_val = 1.0
+        F = 0.5
+
+        def neg_ll_phi(F_val):
+            phi = np.exp(F_val)
+            return em_w_val * (d_val / (2.0 * phi) + 0.5 * F_val)
+
+        fd_g = fd_gradient(neg_ll_phi, F)
+
+        em_w = np.array([em_w_val])
+        d = np.array([d_val])
+        loss = ZITDispersionLoss(d, em_w)
+        result = loss.calc_ders_range([F], [d_val], None)
+        g, _ = result[0]
+        assert abs(g - fd_g) < 5e-4
+
+    def test_hessian_positive(self):
+        """der2 must be positive."""
+        rng = np.random.default_rng(0)
+        n = 10
+        d = rng.uniform(0.1, 5.0, n)
+        em_w = rng.uniform(0.1, 1.0, n)
+        loss = ZITDispersionLoss(d, em_w)
+        result = loss.calc_ders_range(list(np.random.uniform(-1, 1, n)), list(d), None)
+        for _, h in result:
+            assert h >= 0
 
     def test_is_max_optimal_false(self):
         loss = ZITDispersionLoss(np.ones(1), np.ones(1))
@@ -381,7 +428,6 @@ class TestZITLogLikelihood:
         p = 1.5
 
         ll = zit_log_likelihood(y, mu, phi, q, p)
-        # Standard Tweedie zero: log(exp(-mu^(2-p)/(phi*(2-p)))) = -mu^(2-p)/(phi*(2-p))
         p2 = 2.0 - p
         expected = -mu[0] ** p2 / (phi[0] * p2)
         np.testing.assert_allclose(ll[0], expected, rtol=1e-6)
@@ -396,9 +442,6 @@ class TestZITLogLikelihood:
 
         ll_e1 = zit_log_likelihood(y, mu, phi, q, p, np.array([1.0]))
         ll_e5 = zit_log_likelihood(y, mu, phi, q, p, np.array([5.0]))
-
-        # Larger exposure => smaller Tweedie zero prob => smaller probability of observing 0
-        # So ll should differ
         assert ll_e1[0] != ll_e5[0]
 
     def test_all_finite(self):
@@ -422,13 +465,13 @@ class TestZITLogLikelihood:
         q = np.full(n, 0.5)
         ll = zit_log_likelihood(y, mu, phi, q, 1.5)
         assert np.all(np.isfinite(ll))
-        assert np.all(ll <= 0)  # probabilities <= 1 => log-ll <= 0
+        assert np.all(ll <= 0)
 
     def test_ll_all_positive(self):
         """Log-likelihood should handle all-positive y gracefully."""
         rng = np.random.default_rng(77)
         n = 20
-        y = rng.exponential(1.0, n) + 0.01  # strictly positive
+        y = rng.exponential(1.0, n) + 0.01
         mu = np.ones(n)
         phi = np.ones(n)
         q = np.full(n, 0.01)

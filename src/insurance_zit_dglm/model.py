@@ -403,6 +403,7 @@ class ZITModel:
                     loss_function=mu_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 self._mu_model.fit(mu_train_pool)
@@ -415,6 +416,7 @@ class ZITModel:
                     loss_function=mu_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 new_mu_model.fit(mu_train_pool, init_model=self._mu_model)
@@ -447,6 +449,7 @@ class ZITModel:
                     loss_function=pi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 self._pi_model.fit(pi_train_pool)
@@ -458,6 +461,7 @@ class ZITModel:
                     loss_function=pi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 new_pi_model.fit(pi_train_pool, init_model=self._pi_model)
@@ -487,6 +491,7 @@ class ZITModel:
                     loss_function=phi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 self._phi_model.fit(phi_train_pool)
@@ -498,6 +503,7 @@ class ZITModel:
                     loss_function=phi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 new_phi_model.fit(phi_train_pool, init_model=self._phi_model)
@@ -568,6 +574,7 @@ class ZITModel:
                     loss_function=mu_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 self._mu_model.fit(mu_train_pool)
@@ -579,6 +586,7 @@ class ZITModel:
                     loss_function=mu_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 new_mu_model.fit(mu_train_pool, init_model=self._mu_model)
@@ -611,6 +619,7 @@ class ZITModel:
                     loss_function=phi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 self._phi_model.fit(phi_train_pool)
@@ -622,6 +631,7 @@ class ZITModel:
                     loss_function=phi_loss,
                     verbose=self.verbose,
                     random_seed=self.random_seed,
+                    eval_metric='RMSE',
                     allow_writing_files=False,
                 )
                 new_phi_model.fit(phi_train_pool, init_model=self._phi_model)
