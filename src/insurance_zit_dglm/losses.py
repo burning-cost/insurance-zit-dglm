@@ -378,12 +378,14 @@ def tweedie_unit_deviance(
     p2 = 2.0 - p  # (2-p)
 
     # For y > 0: first term y * (y^(1-p) - mu^(1-p)) / (1-p)
-    # For y = 0: first term is 0
-    t1 = np.where(
-        y > 0,
-        y * ((y ** p1) - (mu ** p1)) / p1,
-        0.0,
-    )
+    # For y = 0: first term is 0. Use np.errstate to suppress divide-by-zero
+    # warnings when y=0 (the np.where masks these values out).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t1 = np.where(
+            y > 0,
+            y * ((y ** p1) - (mu ** p1)) / p1,
+            0.0,
+        )
 
     # Second term: (y^(2-p) - mu^(2-p)) / (2-p)
     t2 = np.where(
