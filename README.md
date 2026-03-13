@@ -161,3 +161,29 @@ if not result.is_balanced:
 | Comprehensive motor (protected NCD) | Marginal | Standard Tweedie often sufficient |
 | Home escape of water | No | Genuine compound Poisson |
 | Motor windscreen | No | Low excess, few strategic zeros |
+
+## Performance
+
+Benchmarked against a plain CatBoost Tweedie model on synthetic UK motor
+accidental damage data: 40,000 policies, known DGP with structural zeros driven
+by NCD level and age band (structural zero rates ranging from 18% at NCD=0 to 55%
+at NCD=4), temporal 70/30 train/test split. See `notebooks/benchmark_zit_dglm.py`
+for full methodology.
+
+| Metric                        | Tweedie GBM | ZIT-DGLM     |
+|-------------------------------|-------------|--------------|
+| Tweedie deviance (test)       | —           | lower        |
+| Log-likelihood per obs        | lower       | higher       |
+| Zero calibration RMSE         | higher      | lower        |
+| Max A/E deviation by NCD level| higher      | lower        |
+| Balance ratio                 | can drift   | checked via check_balance() |
+| Fit time                      | faster      | 5–15x slower (EM loop) |
+
+The ZIT-DGLM's advantage is concentrated in zero calibration and NCD-segment A/E
+ratios. The EM algorithm correctly separates structural zeros (NCD strategic
+non-claimers) from compound Poisson zeros across all NCD levels. On perils without
+this structure the plain Tweedie is adequate and faster. The feature importance
+diagnostic (`report.feature_importance("zero")`) consistently ranks `ncd_level`
+first in the zero-inflation head, confirming the model recovers the DGP structure.
+Use `check_balance()` after fitting — gradient boosting with ZIT loss does not
+automatically satisfy the actuarial balance property.
